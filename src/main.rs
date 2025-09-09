@@ -1,0 +1,7 @@
+use call_service::app::{app, run};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let (app, sender) = app().await?;
+    run(app, sender).await
+}
