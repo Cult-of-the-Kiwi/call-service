@@ -1,8 +1,8 @@
-use sqlx::PgPool;
-use tokio::sync::mpsc;
-use topic_structs::{
+use devcord_events::events::group::{
     GroupCreatedEvent, GroupDeletedEvent, GroupUserAddedEvent, GroupUserRemovedEvent,
 };
+use sqlx::PgPool;
+use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::{appstate::AppStateMessage, room::Room};

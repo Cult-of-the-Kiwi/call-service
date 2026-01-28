@@ -4,12 +4,12 @@ use tokio_stream::StreamExt;
 
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
+use devcord_events::events::group::GroupEvent;
 use fluvio::{
     FluvioConfig, Offset, consumer::ConsumerConfigExtBuilder, metadata::topic::TopicSpec,
 };
 use sqlx::PgPool;
 use tokio::sync::{Mutex, mpsc};
-use topic_structs::GroupEvent;
 use tracing::{debug, error};
 
 use crate::{

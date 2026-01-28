@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.100"
 axum = { version = "0.8.4", features = ["ws"] }
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
 dashmap = "6.1.0"
@@ -22,4 +22,4 @@ tower-http = { version = "0.6.6", features = ["cors", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
 webrtc = "0.13.0"
-topic_structs = { git = "https://github.com/Cult-of-the-Kiwi/topic_structs" }
+devcord_events = { git = "https://github.com/Cult-of-the-Kiwi/topic_structs" }

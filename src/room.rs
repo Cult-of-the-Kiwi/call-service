@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 use webrtc::{
     api::{
         APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
@@ -227,7 +227,21 @@ fn create_room_controller_thread(
             debug!("Recieved room info: {info:?}");
             match info {
                 RoomInfo::PCStateChanged { user_id, state } => {
-                    debug!("State changed for {} to {}", user_id, state)
+                    debug!("State changed for {} to {}", user_id, state);
+                    if matches!(
+                        state,
+                        RTCPeerConnectionState::Disconnected
+                            | RTCPeerConnectionState::Failed
+                            | RTCPeerConnectionState::Closed
+                    ) {
+                        if handle_user_disconnected(&user_id, &active_users, &broadcast_sender)
+                            .await
+                        {
+                            info_receiver.close();
+                            debug!("Room closed");
+                            break;
+                        }
+                    }
                 }
                 RoomInfo::TrackCreated {
                     user_id: original_id,
@@ -296,39 +310,7 @@ fn create_room_controller_thread(
                     }
                 }
                 RoomInfo::UserDisconected { user_id } => {
-                    {
-                        let Some(user_info) = active_users.get(&user_id) else {
-                            continue;
-                        };
-
-                        debug!("User disconected info: {:?}", user_info);
-                        debug!("User info tracks: {:?}", user_info.user_tracks);
-
-                        for track in user_info.user_tracks.iter() {
-                            let identifier = PacketIdentifier {
-                                sender: user_id.clone(),
-                                track_id: track.id(),
-                            };
-                            debug!("Broadcasting disconnection for: {:?}", identifier);
-                            let msg = TrackPacket::Closed(Arc::new(identifier.clone()));
-                            if let Err(e) = broadcast_sender.send(msg) {
-                                //This is controlled by the room, it cant break randomly, and if it breaks we are fucked (A lot)
-                                //FIXME! Try and clean up more (Close all user connections)
-                                error!("Room broadcaster closed: {}", e);
-                                break; //Try to clean up
-                            }
-                            debug!("Broadcasted disconnection for: {:?}", identifier);
-                        }
-                        debug!("Finished broadcasting loop");
-
-                        user_info.connection.close().await.ok(); //If its already closed then no problem
-                    } //This needs to be inside another scope, if not, it deadlocks while trying to remove it from active users
-
-                    let removed = active_users.remove(&user_id);
-                    debug!("Removed user bacause of disconnection: {:?}", removed);
-                    debug!("{:?} Users left", active_users.len());
-
-                    if active_users.is_empty() {
+                    if handle_user_disconnected(&user_id, &active_users, &broadcast_sender).await {
                         info_receiver.close();
                         debug!("Room closed");
                         break;
@@ -343,6 +325,46 @@ fn create_room_controller_thread(
             .unwrap(); //If this triggers the service is completelly fucked, panic is probs the right thing to do
         debug!("Room sent to remove");
     });
+}
+
+async fn handle_user_disconnected(
+    user_id: &UserID,
+    active_users: &ActiveUsersMap,
+    broadcast_sender: &broadcast::Sender<TrackPacket>,
+) -> bool {
+    {
+        let Some(user_info) = active_users.get(user_id) else {
+            return false;
+        };
+
+        debug!("User disconected info: {:?}", user_info);
+        debug!("User info tracks: {:?}", user_info.user_tracks);
+
+        for track in user_info.user_tracks.iter() {
+            let identifier = PacketIdentifier {
+                sender: user_id.clone(),
+                track_id: track.id(),
+            };
+            debug!("Broadcasting disconnection for: {:?}", identifier);
+            let msg = TrackPacket::Closed(Arc::new(identifier.clone()));
+            if let Err(e) = broadcast_sender.send(msg) {
+                //This is controlled by the room, it cant break randomly, and if it breaks we are fucked (A lot)
+                //FIXME! Try and clean up more (Close all user connections)
+                error!("Room broadcaster closed: {}", e);
+                break; //Try to clean up
+            }
+            debug!("Broadcasted disconnection for: {:?}", identifier);
+        }
+        debug!("Finished broadcasting loop");
+
+        user_info.connection.close().await.ok(); //If its already closed then no problem
+    } //This needs to be inside another scope, if not, it deadlocks while trying to remove it from active users
+
+    let removed = active_users.remove(user_id);
+    debug!("Removed user bacause of disconnection: {:?}", removed);
+    debug!("{:?} Users left", active_users.len());
+
+    active_users.is_empty()
 }
 
 async fn add_remote_track(
@@ -564,6 +586,7 @@ fn setup_on_track(
                 let packet = TrackPacket::UserPacket(packet);
 
                 if broadcast_sender.send(packet).is_err() {
+                    debug!("Error redirecting package");
                     return; //We asume it closed (Shouldnt happen) so we stop doing our thing
                 }
             }
@@ -585,6 +608,7 @@ fn setup_on_negotiation_needed(
     sender: mpsc::Sender<WSInnerUserMessage>,
 ) {
     let outer_pc = pc.clone();
+
     outer_pc.on_negotiation_needed(Box::new(move || {
         let pc = pc.clone();
         let sender = sender.clone();
@@ -629,16 +653,20 @@ fn setup_on_signaling_state_change(
         let sender = sender.clone();
 
         Box::pin(async move {
+            debug!("Creating answer to remote offer");
+
             let Ok(answer) = pc
                 .create_answer(None)
                 .await
                 .inspect_err(|e| error!("Error creating answer: {}", e))
             else {
+                debug!("Error creating answer");
                 return;
             };
             let Ok(answer_str) = serde_json::to_string(&answer)
                 .inspect_err(|e| error!("Eror parsing answer: {}", e))
             else {
+                debug!("Error parsing answer");
                 return;
             }; //Should not fail
             if pc
@@ -647,11 +675,13 @@ fn setup_on_signaling_state_change(
                 .inspect_err(|e| error!("Error setting lcoal description: {}", e))
                 .is_err()
             {
+                debug!("Error csetting local description");
                 return; //FIXME! If possible try to tell the user
             }
             sender
                 .send(WSInnerUserMessage::Message(answer_str.into()))
                 .await
+                .inspect_err(|e| error!("Error sending answer to ws {e}"))
                 .ok(); //Guess user disconected
         })
     }));

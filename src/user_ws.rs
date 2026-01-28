@@ -39,17 +39,17 @@ async fn handle_ws(ws: WebSocket, state: Arc<AppState>, claims: Claims) {
             .unwrap() //FIXME! Since idk when the ws send none im just ignoring it, shuld check at some point but hasnt crashed it yet
             .map_err(|e| error!("Error listening to user web socket {}", e))
         else {
-            ws_tx.close(); //FIXME! Give feedback
+            let _ = ws_tx.close().await; //FIXME! Give feedback
             return;
         };
         let Ok(msg) = parse_msg(msg).map_err(|e| error!("Room id parsing error {}", e)) else {
-            ws_tx.close(); //FIXME! Give feedback
+            let _ = ws_tx.close().await; //FIXME! Give feedback
             return;
         };
         msg
     }) else {
         error!("User sent a non connect to room msg");
-        ws_tx.close(); //FIXME! Give feedback
+        let _ = ws_tx.close().await; //FIXME! Give feedback
         return;
     };
 
@@ -61,7 +61,7 @@ async fn handle_ws(ws: WebSocket, state: Arc<AppState>, claims: Claims) {
             room_id, e
         );
     }) else {
-        ws_tx.close(); //FIXME! Give feedback
+        let _ = ws_tx.close().await; //FIXME! Give feedback
         return;
     };
 
@@ -74,16 +74,19 @@ async fn handle_ws(ws: WebSocket, state: Arc<AppState>, claims: Claims) {
         .await
         .map_err(|e| debug!("Error when user tried to join the room: {}", e))
     else {
-        ws_tx.close(); //FIXME! Give feedback
+        let _ = ws_tx.close().await; //FIXME! Give feedback
         return;
     };
 
     tokio::spawn(async move {
         while let Some(msg) = room_rx.recv().await {
             if let Err(e) = match msg {
-                crate::room::WSInnerUserMessage::Message(msg) => ws_tx.send(msg).await,
+                crate::room::WSInnerUserMessage::Message(msg) => {
+                    debug!("Sending message to user: {:?}", msg);
+                    ws_tx.send(msg).await
+                }
                 crate::room::WSInnerUserMessage::Close => {
-                    ws_tx.close(); //FIXME! Give feedback
+                    let _ = ws_tx.close().await; //FIXME! Give feedback
                     break;
                 }
             } {
